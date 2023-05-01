@@ -2,108 +2,81 @@
 //% icon="\uf1eb"
 //% groups=[ "Configuration", "Transmit", "Receive" ]
 namespace SimpleRadioMesh {
-    let localAddress = Math.floor(Math.random() * 256);
-
-    const ADDRESS_MAX = 256;
-    const LENGTH_MAX = 256;
-
-    //% block group="Configuration"
-    //% address.min=1 address.max=256
-    export function setMeshAddress(address: number) {
-        localAddress = Math.floor(address);
-        if (localAddress < 1)
-            localAddress = 1;
-        else if (localAddress > ADDRESS_MAX)
-            localAddress = ADDRESS_MAX;
+    enum MessageType {
+        INVALID = 0,
+        ROUTE_ANNOUNCE = 1
     }
 
-    //% block group="Configuration"
-    export function meshAddress(): number {
-        return localAddress;
+    const GOSSIP_INTERVAL = 1000
+
+    let localAddress = Math.floor(Math.random() * 256)
+
+    interface IPath {
+        ttl: number,
+        distance: number
     }
 
-    //% block
-    export function everyone(): number {
-        return 0;
-    }
+    let forwardTable: IPath[] = []
+    let dataTable: { [name: string]: any } = {}
 
-    //% block="on mesh received" group="Receive"
-    //% draggableParameters
-    export function onMeshReceivedNumber(handler: (address: number, value: number) => void) {
+    // Configure the radio
+    radio.on()
+
+    radio.onDataPacketReceived((packet) => {
+        console.log(packet.serial)
+    })
+
+    radio.onReceivedBuffer((rx) => {
         //
-    }
+    })
 
-    //% block="on mesh received" group="Receive"
-    //% draggableParameters
-    export function onMeshReceivedKV(handler: (address: number, key: any, value: any) => void) {
-        //
-    }
-
-    //% block="on mesh received" group="Receive"
-    //% draggableParameters
-    export function onMeshRexeivedString(handler: (address: number, text: string) => void) {
-        //
-    }
-
-    //% block="mesh send to $address number $value"
-    //% group="Transmit"
-    export function sendNumber(address: number, value: number) {
-        //
-    }
-
-    //% block="mesh send to $address ; $key = $value"
-    //% group="Transmit"
-    export function sendKV(address: number, key: any, value: any) {
-        //
-    }
-
-    //% block="mesh send to $address $value"
-    //% group="Transmit"
-    export function sendString(address: number, value: string) {
-        //
-
-    }
-
-    function forward(packet: RadioPacket) {
-        packet
-    }
-
-
-    class RadioPacket {
-        buffer: Array<number>;
-
-        constructor(input: Array<number>) {
-            this.buffer = input || [0, 0, 0, 0];
+    control.runInBackground(() => {
+        let phase = 0
+        let lastGossip = control.millis()
+        while (true) {
+            if (control.millis() - lastGossip >= GOSSIP_INTERVAL) {
+                lastGossip = control.millis()
+                doGossip(phase++ % 5)
+            }
         }
 
-        public get source() { return this.buffer[0]; }
-        public set source(address: number) {
-            this.buffer[0] = address;
-        }
+    })
 
-        public get destination() { return this.buffer[1]; }
-        public set destination(address: number) {
-            this.buffer[1] = address;
-        }
+    function routePacket(address: number, distance: number, ttl: number): Buffer {
+        let buffer = Buffer.create(11)
+        buffer.setUint8(0, MessageType.ROUTE_ANNOUNCE)
+        buffer.setNumber(NumberFormat.UInt32BE, 1, control.deviceSerialNumber())
+        buffer.setNumber(NumberFormat.UInt32BE, 5, address)
+        buffer.setUint8(9, distance % 255)
+        buffer.setUint8(10, ttl % 255)
+        return buffer
+    }
 
-        public get ttl() { return this.buffer[1]; }
-        public set ttl(hops: number) {
-            this.buffer[2] = hops;
+    function parseRoutePacket(buffer: Buffer): { "from": number, "to": number, "ttl": number } {
+        return {
+            "from": buffer.getNumber(NumberFormat.UInt32BE, 1),
+            "to": buffer.getNumber(NumberFormat.UInt32BE, 5),
+            "ttl": buffer.getUint8(9)
         }
+    }
 
-        public get length() { return this.buffer[1]; }
-        public set length(length: number) {
-            if (length > LENGTH_MAX)
-                length = LENGTH_MAX;
-            if (length < 0)
-                length = 0;
-            this.buffer[3] = length;
-            if (this.buffer.length < length + 3)
-                console.warn("WARN: Packet length is longer than the current packet!");
-        }
+    function doGossip(phase: number) {
+        switch (phase) {
+            case 0:
+                radio.sendBuffer(routePacket(control.deviceSerialNumber(), 0, 255))
+                break;
 
-        payload() {
-            return this.buffer.slice(4);
+            case 1:
+                if (forwardTable.length == 0)
+                    return
+
+                let addr = Math.floor(Math.random() * forwardTable.length)
+                let row = forwardTable[addr]
+                radio.sendBuffer(routePacket(addr, row.distance, row.ttl))
+                break;
+
+            default:
+                console.log("Nothing to do in phase " + phase)
         }
     }
 }
